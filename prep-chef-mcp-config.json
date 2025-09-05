@@ -1,0 +1,10 @@
+{
+  "Prep Chef Database Server": {
+    "command": "fastmcp",
+    "args": [
+      "run",
+      "C:\\Projects\\Prep\\ChefPrepBoltDownload\\project\\fastmcp\\FastMCPCloud\\fastmcp-qu
+ickstart-20250904-uf9r\\real_supabase_server.py"
+    ]
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://gofastmcp.com/public/schemas/fastmcp.json/v1.json",
+  "source": {
+    "type": "filesystem",
+    "path": "real_supabase_server.py",
+    "entrypoint": "app"
+  },
+  "environment": {
+    "python": "3.10",
+    "dependencies": [
+      "fastmcp>=2.0.0",
+      "supabase>=2.0.0", 
+      "python-dotenv>=1.0.0"
+    ],
+    "env": {
+      "SUPABASE_URL": "SUPABASE_URL=https://hwqdspmngjcnqdqijpio.supabase.co",
+      "SUPABASE_ANON_KEY": "SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh3cWRzcG1uZ2pjbnFkcWlqcGlvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY3OTAwMDUsImV4cCI6MjA3MjM2NjAwNX0._y1Vjipk_I2-4kyvJX-j4ncFR45cGKjxgFml3GPGibU",  // ✅ FIXED!
+	  "SUPABASE_SERVICE_ROLE_KEY": "SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh3cWRzcG1uZ2pjbnFkcWlqcGlvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1Njc5MDAwNSwiZXhwIjoyMDcyMzY2MDA1fQ.r-lJ_eJn4Ihr5HDOK6yN8OBnCsH2thSjFjLKnt1nMTc"
+      "PYTHONPATH": ".",
+      "DEBUG": "false"
+    }
+  },
+  "deployment": {
+    "transport": "http",
+    "host": "0.0.0.0",
+    "port": 8000,
+    "path": "/mcp",  // ✅ Added
+    "log_level": "INFO",
+    "cwd": ".",
+    "args": ["--config", "config.json"],
+    "env": {
+      "NODE_ENV": "production",
+      "LOG_FORMAT": "json"
+    }
+  }
+}
