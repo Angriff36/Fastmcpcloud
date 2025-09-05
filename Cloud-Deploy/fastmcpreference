@@ -1,0 +1,746 @@
+FastMCP Platform Guide for Modular App Development (Prep Chef)
+Introduction
+
+FastMCP is a framework for building Model Context Protocol (MCP) servers that give AI agents controlled access to tools, data, and context
+GitHub
+. By using FastMCP, we can orchestrate the development of the Prep Chef app – a previously monolithic Progressive Web App – in a modular, collaborative way. This guide is both a developer reference and an AI-agent-ingestible manual, detailing how to install and use FastMCP for a multi-package project. It covers everything from initial setup to advanced debugging, ensuring that both humans and AI agents understand the architecture and best practices.
+
+Scope: We will cover FastMCP installation, quickstart examples, core concepts (servers, tools, resources, prompts, etc.), usage patterns (CLI, development vs. deployment, client integration), environment configuration (especially debugging .env issues), recommended modular project structure for multiple packages, integration examples (Supabase, with pointers for future XWiki or other service mashups), and common pitfalls (e.g. environment variables scoping, import mismatches, proxy settings, CLI context). Real-time features (like live data sync and optimistic updates) and authentication considerations are also addressed. The goal is to provide a comprehensive manual so that AI agents can reliably develop, test, and deploy the Prep Chef app in a modular fashion without falling into common traps.
+
+Installation and Setup
+
+FastMCP can be installed via Python’s package manager. It’s highly recommended to use the Astral uv tool for installation and running, as it streamlines environment management and is required for deploying to FastMCP Cloud
+GitHub
+. If you don’t have uv yet, install it first (on macOS via Homebrew or using the script in Astral docs). Then install FastMCP:
+
+# Install FastMCP using uv (recommended)
+uv pip install fastmcp
+
+# Alternatively, standard pip (for local use only)
+pip install fastmcp
+
+
+Note: Using uv ensures that FastMCP runs in isolated, reproducible environments. On macOS, if uv isn’t in PATH for certain applications, install via Homebrew (brew install uv) to make it accessible to IDEs like Claude Desktop
+GitHub
+.
+
+FastMCP requires Python 3.10+ (3.12+ recommended)
+GitHub
+GitHub
+. Ensure your Python version is up to date. For development of FastMCP itself or running tests, you might include dev dependencies as documented (via uv sync --extra dev)
+GitHub
+, but for using FastMCP to build your server, the pip installation is sufficient.
+
+TypeScript Option: If you prefer Node.js/TypeScript, there is also a FastMCP TypeScript SDK available
+GitHub
+. This guide will focus on the Python SDK as it’s commonly used with Claude and Cursor clients, but know that frameworks exist for Node (e.g. FastMCP (TypeScript), MCP-Framework, and others
+GitHub
+) should you decide to implement MCP servers in a JavaScript environment. In practice, many developers use the Python version for tool servers and integrate with Node-based apps via APIs or shared databases.
+
+After installing FastMCP, verify the installation by checking the version and help command:
+
+fastmcp --version
+fastmcp --help
+
+
+This should display the FastMCP version (ensure it’s the latest, e.g. fastmcp >= 2.12.0
+GitHub
+) and available commands, confirming a successful setup.
+
+Quickstart Example
+
+To understand FastMCP basics, let’s start with a minimal example. Create a file server.py with the following content:
+
+from fastmcp import FastMCP
+
+# Initialize an MCP server instance
+mcp = FastMCP("Demo")
+
+# Define a simple addition tool
+@mcp.tool()
+def add(a: int, b: int) -> int:
+    """Add two numbers"""
+    return a + b
+
+# Define a dynamic greeting resource
+@mcp.resource("greeting://{name}")
+def get_greeting(name: str) -> str:
+    """Get a personalized greeting"""
+    return f"Hello, {name}!"
+
+
+This server defines one Tool (add) and one Resource (greeting://{name}). That’s all the code needed – FastMCP takes care of exposing these to an AI agent in a standardized way
+GitHub
+GitHub
+.
+
+Running the Example: You have a couple of options to try out this server:
+
+Development Mode (MCP Inspector): Run fastmcp dev server.py. This will launch an interactive web interface (the MCP Inspector) where you can invoke tools and resources and see logs in real-time
+GitHub
+. This is great for quick testing. For example, you can call the add tool or fetch the greeting://Alice resource and see the outputs immediately. The dev server auto-reloads on code changes if you mount with the --with-editable flag
+GitHub
+, and you can adjust dependencies on the fly with --with <pkg> flags.
+
+Claude (or AI IDE) Integration: Once satisfied, install the server so your AI assistant can use it. For Claude Desktop, run fastmcp install server.py
+GitHub
+GitHub
+. This command packages the server into an isolated environment and makes it available to the AI client. In Claude’s UI, you’d see the server and its tools appear in the connector panel (with a hammer/tool icon) once installed
+GitHub
+. For Cursor or VS Code, the process is similar – more on that in the Client Integration section.
+
+Verification: If using Claude Desktop, after fastmcp install, you should see a connector icon and your server listed; try prompting the AI with something that uses your tool (e.g., “Use the add tool to sum 2 and 3”) and it should invoke the tool. If using the dev inspector, you can simulate what the AI would do by clicking on the tool or resource and seeing the result.
+
+This quickstart demonstrates how FastMCP abstracts the protocol – we didn’t have to write any networking or RPC code. By simply decorating Python functions, we exposed capabilities to the AI
+GitHub
+GitHub
+. Next, we’ll dive deeper into how this works and how to apply it to our Prep Chef application.
+
+FastMCP Core Concepts
+
+FastMCP provides a high-level API to define an MCP server. Key concepts include the Server, Resources, Tools, Prompts, and Context, which correspond to different ways an AI can interact with your application
+GitHub
+:
+
+Server: This is the central object (our mcp in the example) that represents the MCP server instance. It manages connections, handles requests from the AI, and ensures compliance with the MCP specification. You give it a name (and optional version) for identification
+GitHub
+. You can also specify dependencies here – for example, FastMCP("My App", dependencies=["pandas", "numpy"]) would ensure those pip packages are installed when deploying or running in isolation
+GitHub
+. In our Prep Chef context, you might name the server something like "PrepChef-MCP" and include any external libraries (e.g., supabase Python client) in dependencies so they auto-install on cloud or when using fastmcp install
+GitHub
+.
+
+Resources: Resources expose read-only data to the LLM. They are similar to HTTP GET endpoints – used to fetch context or state, and should not cause side effects
+GitHub
+GitHub
+. You define a resource with a URI pattern (like "greeting://{name}" or perhaps "recipe://{id}" in Prep Chef). The function should return data (string, JSONable dict, etc.) which the AI can then incorporate into its context. FastMCP will automatically handle template parameters in the URI: in our example, when the AI requests resource://greeting/Alice, FastMCP parses {name} = "Alice" and calls get_greeting("Alice"). Use resources for things like configuration data, database records, or computed results that the AI might need to see but which don’t require an explicit action. For instance, Prep Chef might expose a resource like prep-list://{id} to fetch a prep list’s details or config://app for static app config
+GitHub
+.
+
+Tools: Tools perform actions or computations – analogous to POST/PUT in an API. A tool function can do processing, modify state, call external APIs, etc., and return a result. Tools often have side effects or heavier computation, and they can be async functions if needed (FastMCP supports async def tools)
+GitHub
+GitHub
+. In our example, add simply returns a number. In Prep Chef, a tool might create a new recipe (create_recipe), send a notification, or perform a batch operation. Tools can also make external HTTP calls; e.g., you could use httpx to call an API within a tool
+GitHub
+. FastMCP will handle converting the function return into the appropriate JSON RPC response to the AI. Ensure tools do proper error handling and input validation – if a tool raises an exception, the AI will receive an error message. Use Python type hints for tool parameters and returns: FastMCP uses them for input validation (via Pydantic models behind the scenes) and documentation.
+
+Prompts: Prompts in FastMCP are a way to supply the AI with predefined prompt templates or conversations. They can be simple strings or structured sequences of messages
+GitHub
+GitHub
+. A prompt function can take parameters and return a string or a list of messages (User/Assistant messages) that the client (like Claude) will incorporate. For instance, you might define a prompt like @mcp.prompt() for “code review” or “explain this function” that the AI can use to format its responses
+GitHub
+. In Prep Chef’s context, if you have common queries (e.g., “Explain the conflict resolution strategy”), you could encode that as a prompt template. Prompts are mostly for helping the AI formulate outputs or next steps in a standardized way – think of them as macros or canned system prompts the agent can invoke.
+
+Images: FastMCP supports returning images through a special Image class. If a tool returns an Image object, the client knows it’s binary image data
+GitHub
+. For example, you could have a tool that generates a chart or processes an uploaded image and returns an Image(data=..., format="png"). The AI could then present or further use that image. This might be less relevant for Prep Chef, but it’s good to know if you plan to include any image processing (like generating a recipe image or scanning an OCR module result). FastMCP handles the encoding/decoding of images for you
+GitHub
+GitHub
+.
+
+Context: The Context object provides additional controls to tools during execution. If you include a parameter of type fastmcp.Context in a tool function, FastMCP will pass in a context instance
+GitHub
+GitHub
+. This object lets your tool do things like:
+
+Progress Reporting: ctx.report_progress(progress, total) can send incremental progress updates back to the client (useful for long-running tools so the AI/IDE can show a progress bar)
+GitHub
+.
+
+Logging: ctx.debug()/info()/warning()/error() to log messages that the client might display or use for debugging
+GitHub
+. For example, an agent could log detailed info during a complex operation which a developer could review.
+
+Resource Access: ctx.read_resource(uri) allows a tool to programmatically fetch another resource
+GitHub
+. This can be powerful – e.g., a tool can retrieve some data via the same resource mechanism that the AI uses, perhaps to avoid duplicating retrieval logic.
+
+Context is optional; if a tool doesn’t need it, you can omit it. But it’s there if you need advanced control. In Prep Chef, you might use Context in a long database migration tool or an AI-driven code refactoring tool to report progress (so the user/AI knows it’s working).
+
+These core concepts map to MCP’s standardized operations. Under the hood, the AI client communicates via JSON-RPC to list tools, call tools, or get resources; FastMCP manages these calls and routes them to the appropriate Python function, then returns the results back to the model
+GitHub
+GitHub
+. As a developer (or as an AI agent writing code), you mostly just write Python functions with the right decorators and let FastMCP handle the protocol details.
+
+Using FastMCP: Development vs. Production
+
+FastMCP is designed to support the entire lifecycle: local development, testing, and deployment/usage with AI clients. There are a few ways to run and use your MCP server, each suitable for different scenarios
+GitHub
+:
+
+Development Mode (Interactive Testing)
+
+During development, use fastmcp dev to iterate quickly. This mode launches an MCP Inspector UI in your browser
+GitHub
+. For example:
+
+fastmcp dev server.py --with-editable .
+
+
+This will start the server defined in server.py and open a local web interface. You can manually invoke tools/resources here, which is very useful for debugging.
+
+The --with-editable . flag mounts your current code in the environment so that changes you make to the code will auto-reload in the dev server
+GitHub
+. This means you can edit a tool’s code, save, and test again immediately.
+
+You can also add dependencies on the fly with --with. For instance, if you realize you need requests or numpy while testing a tool, you can run fastmcp dev server.py --with requests and it will install that into the environment for this session
+GitHub
+.
+
+The dev inspector provides detailed logs and error tracebacks
+GitHub
+. If a tool raises an exception or you have a bug, you’ll see it in the log panel, which is extremely helpful for an AI agent developer to debug issues like missing environment variables or incorrect logic.
+
+You can also set environment variables in dev mode. The inspector UI has a section where you can provide env vars for testing, or you can use -e VAR=value flags when running fastmcp dev (similar to install mode described below). This helps mimic production environment (e.g., supply your SUPABASE_URL and key here to test tools that call Supabase).
+
+Recommended workflow: Use fastmcp dev early and often to verify each tool or resource in isolation. For example, after writing a Supabase-related tool, run it in dev mode and call that tool with test inputs to ensure it returns the expected data (or error messages). This interactive cycle catches issues before the AI agent ever touches the tool.
+
+Integration with AI Agents (VS Code, Cursor, Claude)
+
+Once your server is working in dev, you’ll integrate it with AI agent clients so that your AI (in VS Code, Cursor, etc.) can use the tools to help develop and orchestrate the Prep Chef app.
+
+Claude Desktop: If you are using Anthropic’s Claude Desktop app, integration is straightforward. Running:
+
+fastmcp install server.py --name "PrepChef Server" -f .env
+
+
+will package and register the server with Claude
+GitHub
+GitHub
+. The --name flag lets you give a friendly name (otherwise it uses the one in code), and the -f .env ensures it loads environment variables from your .env file at install time
+GitHub
+ (more on env in the next section). Once installed, Claude Desktop will spawn the server in a sandbox whenever you open the assistant. You should see the server listed in Claude’s UI (as a connected MCP server), and its tools will be available to the AI (you might see them listed when you click the tool icon). Claude will maintain the server running in the background as long as it’s needed, and you can always uninstall or update it by re-running the install command if you change the code.
+
+Cursor IDE: Cursor also supports MCP servers. If you use Cursor (a VS Code-like AI coding assistant), you can integrate in a similar fashion. In fact, there’s a utility called Cursor MCP Installer that simplifies adding MCP servers to Cursor
+GitHub
+. It supports installing from npm packages, local directories, or Git repositories. In our case, since we have a local FastMCP server, we’d likely use a local path. The process would be:
+
+Install the Cursor MCP extension or use the Cursor command palette to add a new MCP server.
+
+If using the Cursor MCP Installer tool, point it to your server’s code or package (for example, if you published your FastMCP server as a Python package or have it in a Git repo, you could use those; or just local path).
+
+Cursor will then manage running the server similar to Claude Desktop.
+
+Alternatively, you can run the server manually and connect via STDIO or HTTP. Some advanced users run fastmcp run server.py in a terminal and configure the client to connect to it. Cursor might auto-detect local MCP servers if they broadcast on a certain port (if using SSE/HTTP transport). Check Cursor’s documentation for custom MCP servers – since MCP is a standard, any client following it can connect given the server’s address.
+
+VS Code: Currently, VS Code doesn’t natively integrate MCP as Claude and Cursor do, but you might be using an AI extension or a custom setup. If you have an AI agent in VS Code (for example, OpenAI’s GPT via prompts or Community extensions like CodeGPT), they might not support MCP out of the box. However, you can still use FastMCP indirectly:
+
+Run your FastMCP server locally (via fastmcp run or uv run).
+
+Have the agent call the server’s tools through some interface (for example, use HTTP transport and have the agent call HTTP endpoints, or use a CLI client).
+
+A simpler approach: Since you run agents in VS Code, perhaps you are using Cursor’s VS Code extension or something similar. In that case, follow a similar setup as Cursor above.
+
+In summary, integrating with AI agents means installing or running the server so the agent can communicate with it. In Claude Desktop or Cursor, use their MCP integration features (which fastmcp install leverages)
+GitHub
+. For other environments, you can run the server and configure the agent to connect (MCP supports STDIO, SSE, and HTTP transports – the default fastmcp install uses STDIO for Claude; you could run an HTTP server mode if needed for other clients).
+
+CLI Usage and Patterns
+
+FastMCP provides a CLI (fastmcp) with several commands to manage servers:
+
+fastmcp dev <file> – as discussed, runs interactive dev mode (with optional flags for env and dependencies). Use this for local debugging
+GitHub
+.
+
+fastmcp install <file> – packages and registers the server with an MCP client (Claude Desktop by default). This runs the server in an isolated environment (so it won’t interfere with your system Python or Node modules) and keeps it running for the AI to use
+GitHub
+. You can supply -e VAR=value multiple times to set env vars, or -f <envfile> to load from a file, during installation
+GitHub
+. These env vars will persist in the environment that runs the server.
+
+fastmcp run <file>[:object] – directly executes the server in your current environment (without isolation)
+GitHub
+GitHub
+. This is akin to running python server.py for quick tests or custom deployments. You can specify which server object to use if your file creates more than one or uses a non-standard name
+GitHub
+. For instance, fastmcp run server.py:app if your FastMCP instance is called app. Running directly is useful for advanced scenarios: e.g., if you want to run the server on a remote VM or container as a long-lived service, or if you want to integrate with a non-Claude environment. Keep in mind that when running directly, FastMCP does not auto-install dependencies from the dependencies=[...] list in your code
+GitHub
+ – you have to pre-install them (e.g. via pip install -r requirements.txt).
+
+fastmcp list, fastmcp uninstall, etc. – there are likely commands to list installed servers or remove them from integration. (These might be specific to Claude’s integration tool; if using Claude Desktop, fastmcp install actually edits Claude’s config to add your server. To uninstall, you might remove it from Claude’s config or use a provided command or UI toggle.)
+
+MCP Transport: By default, fastmcp install uses STDIO transport (the AI app spawns the server process and communicates via stdin/stdout). There’s also support for SSE (Server-Sent Events) or HTTP transports in MCP. For example, FastMCP Cloud uses an HTTP endpoint. You usually don’t need to worry about this unless doing custom integration; just know it’s happening under the hood. If you needed to run your server manually and have the AI connect via HTTP, you could run fastmcp run server.py which by default might serve an HTTP endpoint (or use transport="http" in code). The MCP protocol is standardized, so any client can talk to any server if configured.
+
+Server Object Naming: FastMCP CLI (and Cloud) will try to import your file and find the MCP server instance. It looks for a variable named mcp, server, or app at module level
+GitHub
+. In our examples we’ve used mcp. If you use a different name, you must specify it in the CLI (like server.py:my_server). In code, you can also create multiple FastMCP servers if needed, but that’s advanced usage (e.g., one file could instantiate two servers for two different configurations; then you’d choose which one to run). For simplicity, we’ll assume one server per file.
+
+Testing tools and sequences: As you develop tools that interoperate (for example, one tool calls another internally, or a prompt uses a resource), consider writing unit tests for them as normal Python functions. You can call the tool functions directly in tests (they’re just functions). The MCP inspector and AI usage are integration-level tests, but standard unit tests can be run with pytest to ensure your logic is sound (FastMCP doesn’t impede this). For example, if you implement a calculate_shopping_list(prepListId) tool, write a quick test that sets up a dummy supabase or stubs supabase.table().select() to return expected data and assert that the output is correct. This can catch issues early, and an AI agent can even help write those tests given this context.
+
+Configuration and Environment Variables
+
+Correctly handling configuration (API keys, DB URLs, etc.) is vital – especially since our user (and likely the AI agents) ran into Supabase credentials not being recognized despite setting them in .env. This section addresses how to properly manage environment variables in FastMCP and the Prep Chef project, and how to debug when variables seem to be missing.
+
+.env Files and Loading: FastMCP does not automatically load .env files unless told to. If you want your local .env file values to be present, you have two choices:
+
+Explicitly load them in code – e.g. using python-dotenv. At the top of your server (or early in application init), do:
+
+import os
+from dotenv import load_dotenv
+load_dotenv()  # loads variables from a .env file into os.environ
+
+
+This will make os.getenv("VAR") return the value from .env if present
+GitHub
+. Always do this before you try to use os.getenv for your configuration. In the Supabase MCP example, they call load_dotenv() at the start of the file
+GitHub
+ so that SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY from the .env are loaded into environment, and then retrieve them with os.getenv(...)
+GitHub
+.
+
+Pass env vars via CLI – when using fastmcp install or fastmcp dev, use the -f .env flag to load a file, or -e KEY=VAL to specify each. For instance, fastmcp install server.py -f .env will read your local .env and inject those into the environment that the server runs in
+GitHub
+. Similarly, fastmcp dev server.py -f .env during testing saves you from modifying code to load dotenv (the CLI will handle it in that session).
+
+It’s fine (even common) to do both: load in code and still use CLI flags for clarity. Loading in code ensures that if you run python server.py directly (or run tests), it still picks up .env. Using CLI -f .env ensures in controlled environments (Claude Desktop, etc.) the env is loaded without modifying code.
+
+Environment Variable Best Practices:
+
+Provide Defaults: When accessing env vars in code, always supply a default or check for presence to avoid crashes if not set
+GitHub
+GitHub
+. For example:
+
+API_URL = os.getenv("API_URL", "https://api.example.com")
+TIMEOUT = int(os.getenv("TIMEOUT", "30"))
+API_KEY = os.getenv("API_KEY")  # might be None if not set
+
+
+This way, if API_KEY is missing, you can handle it (perhaps by throwing a clear error as shown below) instead of causing a KeyError. In the Supabase integration, they do:
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError("Missing required environment variables: SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY")
+
+
+which clearly logs an error and stops execution if the credentials are not provided
+GitHub
+.
+
+Validate on Startup: Following from above, it’s good to validate critical configs as soon as the server starts, so any misconfiguration is caught early
+GitHub
+. You can encapsulate this in a small class or just use simple if-checks. For example, ensure SUPABASE_URL and SUPABASE_KEY are present (like in the example), or if your app needs a SERVICE_API_TOKEN, check it and throw an error with instructions if missing. This will show up in logs or in the dev inspector, making it obvious why something failed.
+
+Document expected variables: Maintain a .env.example in your repo listing all the env vars your app/server uses
+GitHub
+. For Prep Chef, that might include SUPABASE_URL, SUPABASE_ANON_KEY (for client usage), SUPABASE_SERVICE_ROLE_KEY (for server tools if needed), etc., plus any others (API keys for other services, etc.). This helps team members (and AI agents) know what needs to be set. For example, your .env.example could have:
+
+# Required for Supabase
+SUPABASE_URL=https://xyzcompany.supabase.co
+SUPABASE_ANON_KEY=public-anon-key-abc123
+
+# Service role key (server-side use only, keep secret)
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
+
+# Optional configs
+DEBUG=false
+
+
+This file should be checked into Git (since it has no secrets, just placeholders) and serve as documentation. The actual .env with real values stays out of Git (in .gitignore) for security
+GitHub
+.
+
+FastMCP Cloud Env Vars: If you deploy your server to FastMCP Cloud, you will use their interface to set actual environment variables for the deployment (likely through a web dashboard or config file). FastMCP Cloud will inject those into the running container. Make sure the names match exactly what your code expects (case-sensitive). If your code uses os.getenv("SUPABASE_URL"), then in the cloud config you must define SUPABASE_URL. In cloud, you don’t need to worry about .env files (they won’t be automatically read unless you include them and call load_dotenv), instead you rely on the provided environment. The same code that works locally with load_dotenv will work on cloud (it will simply skip if no .env file, but you’ll have actual environment variables there).
+
+Multiple Environments (.env.dev, .env.prod): You can use separate env files or conditional logic if needed. For example, if you want different DB for dev vs production, you might have .env.development and .env.production and choose which to load based on an env like ENV=development. For simplicity, agents can focus on one .env at a time, but just be aware of this practice.
+
+Supabase Credentials Issue (Debugging): If Supabase credentials aren’t being recognized:
+
+Check .env location: Ensure the .env file is in the correct directory. If you run fastmcp dev server.py from the project root, .env in root is fine. But if the server code is in a subdirectory and you run from elsewhere, load_dotenv() might need a path. You can do load_dotenv(dotenv_path="path/to/.env") if needed.
+
+Are they in the environment? Print them out in dev mode to confirm. For example, add a temporary debug in your code:
+
+import os; print("DEBUG_ENV_SUPABASE:", os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_ANON_KEY"))
+
+
+When you run the server (or even from an AI agent via a small tool that returns them), see if they show up. If not, the issue is they never got loaded/set.
+
+FastMCP Cloud: If using Cloud, ensure you added the vars in the Cloud config. If you did and they still don’t show, check that your code is not overriding them or failing early. Also, on Cloud, environment variable names might sometimes be prefixed or managed (though usually straightforward). Possibly, the prep chef app uses a prefix like REACT_APP_SUPABASE_URL (if it was a CRA front-end). In the backend context, you’d use unprefixed names. Make sure you’re using the correct names in each context.
+
+Cursor/VSCode agent context: If the AI agent tries to run part of the code (say executes a test or a script) within VS Code, the environment might not include your .env. VS Code’s terminal might, but an in-extension agent likely not. You may need to instruct the agent to run a setup command or ensure the environment is passed. For example, if using the Cursor MCP integration, when you installed the server you could pass -f .env (similar to Claude). If an AI agent is directly executing code (not via MCP), it might require explicitly loading env (another reason to have load_dotenv() in the code). In short, always initialize env in code for safety and double-check any agent-run scripts include that initialization.
+
+By following these best practices, you minimize the chance of “invisible” issues with env vars. In code, we saw how the Supabase MCP server handled missing env: it logged a critical error and raised an exception
+GitHub
+. Similarly, your Prep Chef modules should handle missing config gracefully (e.g., if Supabase URL is missing, perhaps a module falls back to offline mode or at least logs a clear error). This is especially important when AI agents are orchestrating the app – an agent might not immediately know why something failed unless the error is explicit.
+
+Authentication and Secrets: Besides Supabase credentials, you might have other secrets (API keys for external services, etc.). Store all of these in environment variables. Do not hard-code secrets into the code that an AI is working with, for security. If AI agents need to add new keys (e.g., integrating a new API), they should update the .env (or environment config in cloud) and not commit the secret to Git. You can instruct agents to write something like “Set YOUR_API_KEY in .env” rather than putting the actual key in code. This way, even if an agent has context of the manual, it won’t accidentally expose secrets.
+
+Real-Time Sync Configuration: Prep Chef relies on real-time features (likely Supabase’s realtime database subscription for collaborative edits). From a config perspective, ensure that any realtime endpoints or sockets use environment-based URLs as well. For example, Supabase real-time might use the same URL and a web socket. If using libraries, they handle it via the same supabase URL (just over websocket). No extra env needed except those already mentioned. If there are toggles for real-time (like enabling/disabling it), also make those env-driven if possible (e.g., REALTIME_ENABLED=true in .env). This makes it easy for an agent to simulate offline mode by flipping a setting, etc.
+
+Modular Project Structure and Workflow (Bolt + Node)
+
+With FastMCP enabling orchestration, we now focus on modularizing the Prep Chef app itself. The goal is to break the monolith into isolated packages (modules) that can be developed and tested independently, then composed together. This aligns with the “Bolt-compatible” workflow described in the project plan, where Bolt refers to a development methodology of taking thin vertical slices or features and building them in isolation (possibly named for quick, lightning-fast iteration).
+
+Multi-Package Repository Layout
+
+We recommend a monorepo using npm/Yarn workspaces to host all the packages of Prep Chef. For example, the repository might look like:
+
+prep-chef/
+├── package.json        # Root config, workspaces declared here
+├── .env, .env.example  # Environment files for the app (frontend/backend keys)
+├── packages/
+│   ├── core/
+│   │   ├── package.json
+│   │   ├── src/
+│   │   │   └── ... (core logic: supabase client, types, utilities)
+│   ├── auth/
+│   │   ├── package.json
+│   │   ├── src/
+│   │   │   └── ... (auth service code, hooks, components)
+│   ├── ui-components/
+│   │   ├── package.json
+│   │   ├── src/
+│   │   │   └── ... (reusable presentational components)
+│   ├── data/  (future - for data layer services)
+│   └── features-xyz/ (future feature modules)
+└── src/ (or app/)
+    └── ... (Main application code, still possibly a React app, that uses the packages)
+
+
+In the root package.json, you will have a "workspaces" field listing packages/* (or each subfolder) so that all packages are part of one npm/Yarn workspace. For example:
+
+{
+  "name": "prep-chef",
+  "private": true,
+  "workspaces": [
+    "packages/core",
+    "packages/auth",
+    "packages/ui-components",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @prep-chef/core && npm run build -w @prep-chef/auth && npm run build -w @prep-chef/ui-components",
+    "dev": "react-scripts start", 
+    "test": "react-scripts test"
+    // etc.
+  }
+}
+
+
+(The scripts above assume a React app in root using Create React App or similar for dev server. Adjust according to your actual setup, e.g., if using Vite or Next.js.)
+
+Each package in packages/ has its own package.json. When creating them, use npm init -w packages/<name> to initialize within the workspace. Name them with a scope, e.g., "@prep-chef/core", "@prep-chef/auth", etc., so they can be referred to clearly in imports. Some guidelines for these packages as seen in the plan:
+
+core: This holds fundamental logic and utilities that have no React or browser-specific dependencies. For example, the Supabase client instance can live here (so it’s shared), general types (like TypeScript type definitions for your domain models), and utility functions (like row-level security helpers as mentioned). The core/package.json should deliberately avoid heavy dependencies. It might list @supabase/supabase-js as a dependency (since core manages Supabase), but it should not depend on React or any UI libraries. This keeps it lightweight and usable in non-React contexts (like Node scripts or tests). In fact, if you plan any Node-based scripts or MCP tools that manipulate Prep Chef data, they can import @prep-chef/core without dragging in UI code.
+
+auth: This package isolates authentication logic – services and components related to auth (login, signup, user context). It will likely depend on React (for components and possibly hooks). It might have React as a peerDependency or dev dependency, meaning it expects React to be provided by the app. For example, auth/package.json might have "peerDependencies": {"react": "18.x"} because the main app provides React. This ensures no duplicate React instances. Auth can export things like an AuthService class or functions (for handling tokens, calling Supabase auth API) and React components (like a <CompanyLogin /> component). By isolating auth, changes to auth flows (or even swapping out Supabase auth for something else) can be done in this module with minimal impact on others.
+
+ui-components: This contains pure presentational components – think of this as your internal component library. Buttons, cards, loaders, layout components, etc., that have no business logic, only styling and props. This package will depend on React and possibly a styling library. It should be designed such that these components can be used anywhere in the app (or even another app). By moving them out, you make the main app less cluttered and reduce risk when changing styles (since they’re self-contained). The plan suggests extracting 2-3 components immediately to bootstrap this package. Ensure each component is tested and does not rely on global context or anything specific to the app.
+
+data (planned): A future package for data layer services (database operations, conflict resolution logic). The plan outlines creating a DatabaseService and RealtimeService here to handle all direct Supabase interactions and real-time subscriptions. This would centralize how data syncing and optimistic updates are done. Agents working on conflict resolution can focus on this package. It would depend on core (for types and supabase client) but still not on React.
+
+features-...: As the app grows, you might create feature-specific packages. For example, features-ocr (as mentioned in plan Phase 4) for an OCR module, or features-prep-lists for all functionality around prep lists. These modules can encapsulate both logic and UI for that feature. The Bolt workflow suggests you create a new package for any significant feature so it can be developed in parallel without affecting others.
+
+The main application (likely still a React app in src/ at root) will import these packages instead of having everything inline. For example, instead of importing ../lib/supabase it will do import { supabase } from '@prep-chef/core'. Instead of a local AuthForm component, it might use <CompanyLogin /> from @prep-chef/auth. And common UI like <Button /> from @prep-chef/ui-components. You will progressively replace internal references with package imports as you migrate code.
+
+Modular Development Workflow (Bolt Sandbox)
+
+The Bolt workflow entails developing each module in isolation:
+
+Isolate and build: When working on a particular package, you change directory into that package and run its dev/build commands. For example, to work on auth: cd packages/auth && npm run dev to start a sandbox environment for auth. This could mean running storybook for components, or a simple create-react-app inside that package for testing the auth flows alone. In some cases, you might write a small demo in the package to test it. The idea is to avoid running the entire app while developing one piece, which results in faster feedback and safer changes.
+
+Test independently: Each package can have its own tests. Run npm test -w @prep-chef/core to test core, etc. The implementation plan even suggests specific tests, like conflict resolution tests in the data package. By having a test suite in each module, an AI agent can run those to verify functionality after making changes.
+
+Bolt checks: After making changes in a module, you perform a “Bolt Test” by integrating it back into the main app to ensure nothing breaks. This might be as simple as running the main app and seeing that everything still works with the new module or running an integration test. The plan’s Backward Compatibility Layer is key here: after extracting functionality to a module, they temporarily keep the old import paths working by re-exporting the module’s exports. For example, after moving auth logic to @prep-chef/auth, they add src/services/companyAuth.ts in the main app that just does export * from '@prep-chef/auth';. This way, existing code referencing services/companyAuth won’t break immediately. The app can run as before. Over time, the agent will replace those old imports with direct module imports, and finally remove the compatibility file.
+
+Parallel development: With modules, two agents (or two developers) can work concurrently on different features without stepping on each other. One could be in packages/ocr building an OCR feature, while another is in packages/prep-lists adding enhancements to list management. As long as their changes are contained and respect the package boundaries, integration will be smooth. The manual for agents should emphasize to keep concerns separated – e.g., don’t add recipe logic in the auth module, etc.
+
+Package Dependencies: Keep the dependency graph clean to avoid circular references:
+
+core should be lowest-level (others can depend on it, but it depends on none of the others).
+
+UI components should ideally not depend on core or auth (they are generic).
+
+Auth might depend on core (for types or for using the supabase client for login flows).
+
+Data might depend on core (for supabase client, types) and maybe on auth if some auth context needed, but try to keep it minimal. Possibly auth and data are separate enough.
+
+Feature modules might depend on core, data, auth, etc., depending on what they need.
+
+Try to avoid two heavy modules depending on each other – if you find that, consider merging them or extracting a common sub-module.
+
+Gotcha: Import paths. In a monorepo, if TypeScript is configured with path aliases or if you’re using module imports, be mindful of import paths. A common mistake is an agent (or developer) writing a relative import import ../../core/src/supabase instead of using the package name. The correct way is to use the package name (once it’s set up and built). During development, use npm link or the workspace functionality that automatically symlinks them. If you run npm install in the root, it will hoist and link all packages because of workspaces. So, after you create the packages and update root, do an install to ensure everything is linked. Then import { supabase } from '@prep-chef/core' will work in your main app. If an agent forgets and tries a deep import, that can break encapsulation (and wouldn’t work once published). So always prefer importing from the package’s public API (usually its src/index.ts exports that we set up). Indeed, ensure each package’s src/index.ts exports all the entities that other packages or app will need.
+
+Building packages: Each package likely needs a build step (e.g., TypeScript compilation or bundling). You can configure each with a script, like "build": "tsc" (if just using TypeScript compiler to output .d.ts and .js files), or use a tool like Rollup if needed. At least ensure you can produce a dist for each. The main app’s build (if using CRA or similar) might also compile the workspace packages (if configured to do so). If using CRA, you might have to tweak it to transpile the workspace packages (CRA by default doesn’t allow importing outside src without additional config). A workaround is to use CRACO or switch to Vite/Next for easier monorepo support. If an AI agent is assisting, it should be cautious about this and possibly suggest enabling compilation of workspace packages. (This is a known friction: CRA might treat them as node_modules and not transpile if they are already in JS, so you might need to compile them or configure Babel to include them.)
+
+Module Interface Contracts: Define clear API boundaries. For instance, core exports a Supabase client and some types. Auth exports an AuthService, a hook useCompanyAuth, and UI component CompanyLogin. The main app or other modules should rely only on those, not on internal details of auth. This ensures you can change internals without breaking the others. Agents should respect these boundaries when coding (e.g., if adding a new function needed in auth, export it via auth’s index, don’t have another module reach into auth’s internals).
+
+Real-time and Conflict Resolution: The Data module is crucial for preserving Prep Chef’s collaborative features. The plan outlines how to extract real-time sync logic into a RealtimeService and conflict resolution into DatabaseService. When implementing this:
+
+Make sure that the Supabase real-time subscriptions (likely using supabase.channel.on('postgres_changes', ...) or older supabase.from(...).on('INSERT', ...)) are all managed in one place (RealtimeService). The main app can call something like RealtimeService.subscribeToCompanyData(companyId) to start listening, and the service can internally handle reconnects, etc. The agents should reproduce the existing behavior (like storing unsubscribing functions, handling auth re-triggering subscriptions on login, etc.).
+
+Optimistic updates: The pattern likely used is: when a user makes a change (add item, edit something), the app immediately updates the UI (optimistic) and sends to supabase, but if the supabase response indicates a conflict or overwrites (due to another user’s change), the app resolves it (perhaps by merging or showing a notice). Ensure these flows are tested. The plan’s conflict test list is a good reference: simulate offline then sync, concurrent edits, and reconnection scenarios to verify your new data layer works.
+
+The Bolt Test for this was adding explicit tests for conflict resolution logic. Agents should carry over those tests into the packages/data test suite. For example, writing a Jest test that mocks two concurrent updates and ensures the handleConflict method does the right thing.
+
+By modularizing, an AI agent can focus purely on conflict logic in isolation (which is easier to reason about than tangled in UI code). This reduces misunderstandings.
+
+Example: Backward Compatibility Layer
+
+It’s worth highlighting how to implement a compatibility shim, since an AI agent might need to do this during refactoring. Suppose we moved useCompanyAuth hook and CompanyLogin component to packages/auth. Initially the main app’s components might import from "../hooks/useCompanyAuth" or "../components/CompanyLogin". Changing all those in one go is risky. Instead:
+
+Create a file in the old location (where companyAuth.ts was in services) that simply re-exports the new module:
+
+// src/services/companyAuth.ts (deprecated, temporary)
+export * from '@prep-chef/auth';
+
+
+This makes everything exported by @prep-chef/auth available under the old import path. So the app keeps working.
+
+The app will log a warning (you could add a console.warn in that file to alert not to use it). Meanwhile, you gradually update imports across the codebase (maybe module by module or file by file) to point to the new package. The AI agent can do this as subsequent tasks.
+
+Finally, when no code is using src/services/companyAuth.ts, you can remove that file and its import. This is often done at the end of migration (ensuring nothing breaks).
+
+Do similar for any other extracted module if needed (for core, if something was globally accessible, although core mostly holds things that can be swapped fairly easily).
+
+This approach allows zero-downtime incremental migration, which is safer especially if AI is automating it stepwise. Always run the app and tests after such changes to ensure everything still works as expected at each step.
+
+Integration Example: Supabase in FastMCP and App
+
+Supabase is the backend for Prep Chef (real-time database, auth, etc.). We must integrate Supabase properly both in the app’s code (modules) and potentially in the FastMCP server (if we create tools to query Supabase or manage it). Let’s cover both:
+
+Supabase in the App (Core Module)
+
+In the app, the core package now houses the Supabase client. The code might look like:
+
+// packages/core/src/supabase.ts
+import { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl = process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL;
+const supabaseAnonKey = process.env.REACT_APP_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+
+export const supabase = createClient(supabaseUrl!, supabaseAnonKey!);
+
+
+A few notes:
+
+We check for both REACT_APP_* and plain variants. If using Create React App, your environment variables for front-end must be prefixed with REACT_APP_ to be injected at build time. If using Vite, they’d be import.meta.env.VITE_SUPABASE_URL. An agent should be aware of the build tool in use. Let’s assume CRA for now: so actually in CRA you’d use process.env.REACT_APP_SUPABASE_URL. In Node or when running tests, you might just use SUPABASE_URL.
+
+The ! after variable means we assume it’s set (non-null assertion). It’s better to actually handle if missing (throw or default). For example, if missing, maybe default to "" and that will cause errors down the line – which is fine or explicitly throw with a message.
+
+Do not commit the actual URL or keys. These come from .env. Ensure your .env (for development) contains REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY. The service role key (which has more privileges) should not be used in front-end code (for security). That one will be used only on the server side (MCP server or any backend).
+
+All parts of the app (any package) that need to talk to Supabase directly should import this supabase instance from @prep-chef/core rather than creating their own. This ensures there is a single configured client (which handles auth state, subscriptions, etc.). For example, the auth module’s hook might use supabase.auth.signIn() via the shared client.
+
+After moving, do a Bolt test: in the main app, import something from @prep-chef/core that uses supabase (like a simple query) and verify it works (perhaps by logging in or fetching some data). The plan explicitly says to verify the Supabase client works via the core import.
+
+Real-time Subscriptions: Likely in the old app, somewhere in App.tsx or a context provider, they set up a Supabase subscription: e.g., supabase.channel('something').on('postgres_changes', payload => ...).subscribe(). That code will move to RealtimeService in packages/data. You’ll expose methods like subscribeToCompanyData(companyId) to encapsulate that. The main app will call that once after login or when switching context. The RealtimeService can also handle unsubscribing (keep track of subscription objects). It may use the supabase from core as well.
+
+Optimistic UI updates: In the current app, when a user adds an item offline, they might store it locally and when back online, the server syncs it. The plan’s test cases indicate that offline additions then sync, concurrent edits, etc., need to be tested. The Data module’s DatabaseService.handleConflict(local, server) will implement conflict resolution strategies (for example, last write wins or merging changes field-by-field). The exact strategy depends on app needs (the plan likely expects explicit handling, not just blindly overwriting). Agents implementing this should use the existing logic as reference – presumably the monolith had some way to resolve conflicts (maybe none, and that’s why it’s a risk to handle now). Possibly rely on Supabase’s RLS (row level security) and replication of offline changes.
+
+Supabase in FastMCP Server (Tools)
+
+We might want to create MCP tools that interact with Supabase, to allow the AI agent to query or manipulate data via tools. This could be useful for tasks like seeding data, running complex queries, or even migrating data. For example, we could make a tool to list all users, or to run a specific query for debugging.
+
+To integrate Supabase in the FastMCP server:
+
+Add Supabase client setup in the MCP server code, similar to the app. Use environment variables for URL and a suitable key. Likely, you would use the service role key (which has full access) in the server, because AI agent might need to read/write data unrestricted (especially for maintenance tasks that normal users can’t do). This key must be kept secret – only set it in the environment (FastMCP Cloud settings or local .env) and never expose to the AI in a resource or so.
+
+Use the official Supabase Python client or just HTTP requests. Supabase has a Python library (supabase-py). The example we found uses supabase Python library and create_client
+GitHub
+. To use that, install it: add "supabase~=1.0" to requirements.txt or as a dependency of the server (and include in dependencies=[...] if using FastMCP Cloud deployment).
+
+At startup, load env and initialize the client:
+
+from supabase import create_client
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    raise ValueError("Supabase credentials not set in environment")
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+
+This mirrors the community example
+GitHub
+GitHub
+.
+
+Now define some tools using this supabase object. For instance:
+
+@mcp.tool()
+def list_recipes(limit: int = 10) -> list[dict]:
+    """List the latest recipes (for debugging or analysis)"""
+    res = supabase.table("recipes").select("*").limit(limit).execute()
+    return res.data  # returns a list of dicts
+
+
+Or a tool that calls a stored procedure or performs an admin action. The Supabase MCP example defines tools like read_rows(table, query), create_records(table, data) etc., essentially exposing a generalized interface to the DB
+GitHub
+GitHub
+. You can do something similar but be cautious: giving an AI uncontrolled SQL access can be risky. It might be safer to have specific tools (the AI is less likely to do something unintended if the tools are focused).
+
+If you create such tools, ensure they respect security. For example, if you don’t want the AI to accidentally wipe tables, you might avoid making a direct delete_rows tool or if you do, put in confirmation steps (though the AI could hallucinate those away, so maybe not expose deletion at all). For read access, a tool that filters by certain criteria is fine.
+
+These tools allow the AI to, say, fetch some data to cross-verify something or populate context. But remember, the AI could already access data through the app itself (by calling resources if you exposed them). Decide whether redundancy is needed. Possibly, resources in MCP server could overlap with what the app’s API already can do. Since Prep Chef is an offline-first PWA, it might not have a traditional REST API server (Supabase is the “API”). So the MCP server might act as an admin API for debugging.
+
+Using the Supabase tools via AI: If an AI agent (in Cursor or Claude) has these tools, it can, for example, call list_recipes to retrieve data and then decide something based on that. This can be part of orchestration (maybe verifying that data model changes didn’t break existing data, etc.).
+
+Finally, whether in app or server, test the Supabase integration thoroughly:
+
+In dev, try a simple query tool or function that uses supabase to ensure it returns data (you may use a test table or an existing one).
+
+Check error handling: if Supabase returns an error (network down, etc.), make sure the code handles it (maybe the tool propagates an error message).
+
+Performance: large data calls could slow down the AI. Use limits and/or pagination in any data-returning tool so you don’t accidentally dump thousands of records (unless intentionally needed).
+
+Extending to New Integrations (XWiki, Service Mashups)
+
+The modular design and FastMCP orchestration make it relatively straightforward to integrate additional services in the future. Two examples on the horizon are an XWiki integration and potentially combining multiple services (mashups).
+
+XWiki Integration: XWiki is a wiki platform that could serve as a knowledge base for Prep Chef (e.g., documentation, user guides, or collaborative editing of recipes in a wiki style). To integrate XWiki, one approach is to create a new FastMCP server or module dedicated to it. For instance, you could have an xwiki-mcp-server that provides tools like search_wiki(query) or get_wiki_page(pageId) using XWiki’s REST APIs. The AI could then use those tools to retrieve information or even update wiki pages. If the integration is tightly related to Prep Chef, you might instead create a packages/xwiki in the monorepo, which interacts with XWiki (perhaps syncing certain content with the app).
+
+Stub out a module: You can scaffold a package (similar to core/auth) for XWiki. It might not do much initially – maybe just a placeholder function or class – but it establishes a spot to add code later. This is helpful for planning. For example, a stub might include a config for XWiki URL and a function WikiService.getPage(id) that currently returns a “Not implemented” or dummy data. The AI agent can be told to focus on this later when ready.
+
+Service Credentials: Like Supabase, XWiki likely requires a URL and API token or login. Plan to store these in .env (e.g., XWIKI_URL, XWIKI_API_TOKEN). Add them to .env.example for documentation.
+
+Tools for Agents: If you want the AI to be able to pull data from XWiki while coding, consider adding MCP tools as well. For example, a tool search_docs(term: str) could query the XWiki for documentation on a topic and return summary text. This could be useful if the AI needs to recall requirements or user stories stored in the wiki.
+
+Service Mashups: A mashup might involve using multiple services together. For example, maybe combine Supabase data with an external AI service, or orchestrate XWiki updates based on app events. With FastMCP, you can create higher-level tools that coordinate multiple actions:
+
+E.g., a tool that onboards a new company: it could create records in Supabase (via a Supabase tool or direct client) and also create a wiki space in XWiki for that company’s docs. The tool might call sub-tools or use multiple SDKs. The AI can invoke this single tool to perform the multi-step action safely.
+
+Another example: if Prep Chef someday integrates a payment API or an email service, you’d add those as well – perhaps as separate modules or direct inside an MCP server. The modular approach (one module per concern) prevents the codebase from entangling these integrations.
+
+In summary, adding new integrations typically means:
+
+Set up credentials (env vars, config).
+
+Add a new module or expand an existing one with the integration client code.
+
+Write MCP tools or app functions to utilize the integration.
+
+Document and test the new feature (so AI agents know how to use it).
+
+Because this guide is aimed at AI agents as well, it’s important to clearly signal where new integration code should live. For instance: “If adding X service, create a new package or use the features-x pattern. Do not just sprinkle X service calls throughout random places.” This helps an AI agent maintain structure.
+
+Deployment and Versioning
+
+After building and testing the modular app and its FastMCP server, the final step is deployment. There are two parts: deploying the Prep Chef app (which might just be a static web app or mobile app) and deploying the FastMCP server (if you want it accessible outside your local environment, e.g., on FastMCP Cloud so agents can use it without your computer).
+
+Prep Chef App Deployment: If it’s a PWA, you likely build it (e.g., npm run build for CRA) and host static files or release to an app store. The modularization shouldn’t change that dramatically – just ensure the build includes all packages. If using a cloud CI, make sure it runs install (with workspaces) and build properly. Keep an eye on any build errors that could arise from moving files (update any paths or import mistakes).
+
+FastMCP Server Deployment: FastMCP provides a cloud hosting service (FastMCP Cloud) which can pull from your GitHub repo and deploy the server. From the Cloud Deployment learnings
+GitHub
+GitHub
+, key requirements for a successful deployment:
+
+You must have a module-level server object (we do – mcp = FastMCP(...) in our file)
+GitHub
+.
+
+Dependencies should be strictly via PyPI (no local file deps)
+GitHub
+. So ensure your requirements.txt lists everything needed (fastmcp itself, supabase, etc.). Don’t use -e . or relative paths in it
+GitHub
+. If you have shared code, either package it or copy into the server’s directory (the cloud guide suggests copying shared code into each server module if not publishing to PyPI)
+GitHub
+.
+
+The repository must be accessible (public or given access token)
+GitHub
+.
+
+Entrypoint specification: In FastMCP Cloud, you’ll specify which file and server object to run. For a monorepo with multiple servers, you might deploy each one separately by pointing to different subfolders
+GitHub
+. In our case, we likely have one main MCP server (e.g., mcp_server.py in root or in a mcp/ directory). Ensure the cloud is configured to use that (in the UI or config, set entrypoint to mcp_server.py and the correct object name). Also supply the requirements.txt path.
+
+Environment Vars on Cloud: Set them in the cloud interface. After deploying, if something isn’t working, check the logs. FastMCP Cloud logs can show if it couldn’t find a variable or had an import error.
+
+Versioning: Both for the app and server, use semantic versioning to track changes:
+
+In FastMCP, you can pass a version="X.Y.Z" when creating the FastMCP instance
+GitHub
+. It’s a good idea to update that when you make significant updates. This version may be displayed in the client or logs, which helps ensure the AI knows which version it’s using. For example, FastMCP(name="PrepChef-MCP", version="1.1.0") when you add a new tool. This also helps if you have multiple environments (maybe a dev vs prod server).
+
+For NPM packages in Prep Chef, increment their versions when publishing or releasing. Since it’s a monorepo and maybe all internal, you might not publish them to the registry, but you can still update versions in package.json to indicate changes.
+
+If multiple AI agents or developers are working, communicate version changes via Git or documentation so everyone (including agents reading context) knows what’s current.
+
+Deployment Verification: After deploying, always test:
+
+FastMCP Server test: You can ping the MCP endpoint. For example, if deployed to FastMCP Cloud, you get a URL like https://<your-server>.fastmcp.app/mcp. You can send a JSON-RPC request to list tools
+GitHub
+ and ensure you get a response. The guide suggests using curl to do a tools/list and tools/call test
+GitHub
+. This is a good practice to ensure the server is live and functioning. An AI agent could automate this test as well.
+
+Integration test with AI: Connect your AI client (Claude, Cursor) to the new deployed server and try a known scenario (e.g., use the Supabase query tool to fetch something, ensure it returns data). This end-to-end test guarantees that the AI, MCP server, and your app’s data are all in harmony.
+
+App test: Make sure the live app (if you deployed it) still works with the modular code. This includes real-time sync – e.g., open two browser windows and simulate concurrent edits to see if your new data layer properly resolves conflicts as it did before. The last thing you want is to deploy and then discover that collaborative editing is broken due to a missed piece of logic.
+
+Contributing and Team Practices: Since this project involves AI agents in development, treat them as part of the team. Maintain good project hygiene:
+
+Use Git for all changes. Even if an AI writes code, ensure it goes through version control. Write clear commit messages (an agent can be instructed to do so).
+
+Code reviews: Have agents or humans cross-verify critical sections. The documentation prompts (like a code review prompt tool) can help AI double-check logic.
+
+Pre-commit hooks and formatting: The FastMCP contributing guide recommends using pre-commit for formatting
+GitHub
+. Set up a common linting/formatting configuration (ESLint/Prettier for JS, black/flake8 for Python) so that all code (including agent-written) is consistent. You can even have an AI agent run formatting if it’s configured to.
+
+Tests should be run in CI. If an AI agent contributes, it should also ensure tests pass. For Python server, run pytest; for the JS packages, run npm test. If something fails, analyze and fix.
+
+By following this guide, AI agents will have a solid understanding of how to use FastMCP to support development of the Prep Chef modular app. They will know how to set up and configure the MCP environment, how to respect the project’s modular structure, and how to avoid common pitfalls during execution. Ultimately, this enables a smoother human-AI collaboration, where the AI can confidently execute tasks like refactoring code, adding features, or debugging issues in a complex multi-repo (or multi-package) setup.
+
+Common Pitfalls and Gotchas for AI Agents
+
+Even with the above guidance, there are some common misunderstandings and pitfalls that we want to explicitly warn about. Both human developers and AI agents should be mindful of these:
+
+Environment Variables Not Loading: If you (the AI) call a function and get None or errors because an env var is missing, remember to load the env. Double-check that load_dotenv() is called, and that you passed the env vars in the CLI if needed. If running inside an IDE agent, you might need to instruct it to include the env. A quick test is to output os.environ keys or specific vars in a controlled way to see if they are present. If not, adjust your startup procedure. For front-end code, ensure that build-time env vars (like REACT_APP_*) are correctly referenced; missing API keys there will show up as undefined at runtime in the browser console.
+
+Import/Module Mismatch: After refactoring, an AI might try to import something that moved. For example, import { supabase } from '../../lib/supabase' would break if supabase.ts moved to core. The correct import is @prep-chef/core (assuming core’s package.json name is set accordingly). Always update import paths to use the new module names. If you see a runtime error like “Cannot find module X” or a TypeScript error on import, trace where that module lives now. Use the compatibility re-exports temporarily, but ultimately fix the imports to point to the new location. This also applies to file renames (e.g., if companyAuth.ts became AuthService.ts, update references).
+
+Forgetting to Rebuild: In a multi-package setup, if you change code in one package (say core), the main app or other packages using it might still be using an old compiled version. If using workspaces with automatic linking, running the main app’s dev server may transpile the latest code (depending on config). But if not, you may need to run the build for that package. Set up a convenient root script to rebuild all or use tools like Lerna or Nx if the project grows. For AI agents: after making significant changes in a package, run its build and run tests to catch errors. For example, if you add a new export in core’s TS code but forget to build, the main app might get an outdated .d.ts and throw an error. So always build or use a watch mode.
+
+Proxy Configuration: If you’re in a corporate network or certain cloud environment where external requests require a proxy, the MCP server or any outgoing HTTP calls (e.g., httpx in a tool, or supabase client connecting) might need proxy settings. Typically, setting the environment variables HTTP_PROXY and HTTPS_PROXY will make libraries like httpx or requests use the proxy. Node fetch can also use those or need explicit config. If an AI agent is running into timeouts accessing an API (or Supabase) in an environment with known proxy, ensure those env vars are set (either on the system or via .env). This isn’t usually an issue in cloud deployment or local dev unless behind a firewall, but it’s noted here as a potential gotcha in enterprise settings. Also, FastMCP supports proxies for certain official servers (like web search) – if you integrate any such, follow their instructions for proxy usage.
+
+MCP CLI Context Loss: Each time you run a CLI command like fastmcp run or fastmcp dev, it starts a fresh process. If your AI agent is doing this repeatedly (say, installing, then running, then reinstalling), note that state in memory will not persist between runs. For example, if the AI had the MCP server running and it stored some data in a global variable, a restart will clear it. Rely on persistent storage (files, databases) if you need memory across restarts. Also, if switching from dev mode to installed mode, realize they use separate envs. The dev mode might have had some env var set that you forgot to pass when installing, leading to “it worked in dev, but not when installed” issues. Always mirror needed environment configuration in both dev and production runs.
+
+Scope of .env: If your project has multiple .env (one for the app, one for the server, etc.), be careful not to mix them up. The AI should understand that the app’s .env (for front-end) might have different keys (prefixed) than the server’s .env. For instance, REACT_APP_SUPABASE_URL is for the front-end build, whereas SUPABASE_URL without prefix is used by the Python MCP server. Maintain both and document them. In this guide, we assumed a unified env for simplicity, but in practice you might separate them. Just ensure consistency and clarity which is which. Also, .env-mcp was mentioned in some contexts (for Claude’s config); if you use a tool like claude-mcp script, it expects an .env-mcp file for configuration
+GitHub
+. Don’t confuse that with your app’s .env – they could be merged or separate. The key is that the environment variable names should match what the code expects in whichever runtime.
+
+Real-time Edge Cases: After refactoring the real-time logic, some edge cases might appear: e.g., two simultaneous updates now might both call handleConflict whereas previously one might have been ignored – just be vigilant. If an AI agent is generating the conflict resolution code, enre it’s thoroughly tested because LLMs might not foresee all concurrency issues. Use the test scenarios defined in the plan as a guide. If those tests fail, iterate on the solution. This is a subtle area where mistakes can be hard to debug without explicit tests.
+
+Tool/Function Timeouts: If an MCP tool is long-running (e.g., scanning a large database or calling external APIs), remember that FastMCP (especially in cloud) may have a timeout (commonly 5-10 minutes)
+GitHub
+. If an AI agent tries to do something that takes too long, it might get cut off. Use progress reports (ctx.report_progress) to keep it alive if needed, or break tasks into smaller chunks. In cloud deployment, allocate more resources if needed for heavy tasks
+GitHub
+, or optimize the code (use caching results, etc., as shown with an example cache class
+GitHub
+GitHub
+). Agents should be aware of not writing extremely inefficient code for tools that handle lots of data – vectorize or paginate operations as needed.
+
+Dependency Management: With multiple packages and servers, keep track of dependencies. Don’t let an AI agent introduce a new dependency in a package without adding it to that package’s package.json (for JS) or requirements.txt (for the server). Otherwise, it will work on their machine (if something else pulled it in) but fail on CI or Cloud. Use the dependency tests as in cloud guide (create fresh venv and pip install requirements to see if any import is missing)
+GitHub
+. The AI can automate that check too.
+
+Avoid Hallucinated Endpoints or Tools: When instructing an AI with this manual as context, it may be tempted to use tools or endpoints that seem to exist from reading documentation but aren’t actually implemented. For example, it might assume a tool tools/list exists without confirming. Always verify the available tools (with tools/list method) and implement any it plans to use but finds missing. Similarly, if an AI “plans” to use an XWiki integration that hasn’t been coded yet, it should realize it needs to implement it or adjust the plan. Encourage the agent to ground its actions in the actual codebase state.
+
+By acknowledging these pitfalls, we aim to prevent AI agents from making common mistakes. When in doubt, agents should refer back to this guide or run small experiments (in a safe dev environment) to validate their assumptions. The modular architecture and FastMCP provide a powerful platform – used correctly, they will significantly boost development productivity and maintainability for Prep Chef.
+
+Conclusion
+
+This comprehensive guide has covered how to leverage FastMCP for developing and orchestrating the modular Prep Chef application. We started with the basics of FastMCP installation and its core concepts, then moved through running servers in development and production, managing configuration, structuring a multi-package codebase, integrating with Supabase (and planning for future services like XWiki), and finally, debugging and best practices.
+
+By following the patterns and advice here, AI agents working alongside human developers will:
+
+Understand the architecture: knowing which module does what, and how the MCP server ties in.
+
+Know the commands and tools: using fastmcp CLI effectively to test and deploy, and using the MCP Inspector or client integrations for quick feedback.
+
+Preserve security and stability: by properly handling environment variables and not exposing secrets or breaking real-time functionality.
+
+Be able to extend the system: adding new features or integrations in a modular way without regressions.
+
+Avoid common errors: thanks to the highlighted gotchas section.
+
+FastMCP, combined with a Bolt-compatible modular workflow, sets the stage for parallel development and safe iteration. Each module can be built and verified in isolation, and the MCP server provides a unified interface for the AI to interact with the whole system. Version control, testing, and incremental migration strategies ensure that even as the app evolves, it remains reliable.
+
+With this guide in hand (or in prompt), an AI agent should be well-equipped to contribute to Prep Chef’s codebase. It can act as a smart pair programmer – refactoring code to modules, writing new functions, generating tests, and even performing deployment steps – all while adhering to the architectural and operational guidelines we’ve established.

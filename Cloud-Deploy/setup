@@ -1,0 +1,190 @@
+# FastMCP Setup Guide - Prep Chef Project
+
+## What We Accomplished
+Successfully set up FastMCP for the Prep Chef project with a comprehensive MCP server that integrates with Supabase, providing AI agents with tools to manage prep lists, recipes, inventory, and staff.
+
+## Prerequisites
+- Python 3.11.0 (3.10+ required)
+- `uv` package manager (recommended by FastMCP)
+- Supabase project with beta database
+- Existing Prep Chef project with modular package structure
+
+## Step-by-Step Setup
+
+### 1. Install FastMCP
+```bash
+# Using uv (recommended)
+uv pip install fastmcp
+
+# Verify installation
+fastmcp --version
+# Should show: 2.12.2 or higher
+
+# Check available commands
+fastmcp --help
+```
+
+### 2. Create Requirements File
+Created `requirements.txt`:
+```
+fastmcp>=2.12.0
+supabase>=2.18.0
+python-dotenv>=1.1.0
+```
+
+### 3. Environment Configuration
+**Important:** We discovered the original "my env.txt" file contained multiple database configurations mixed together. For production, create a clean `.env` file with only the beta database credentials:
+
+```env
+# Clean .env file (beta database only)
+SUPABASE_URL=https://hwqdspmngjcnqdqijpio.supabase.co
+SUPABASE_ANON_KEY=your-beta-anon-key-here
+VITE_SUPABASE_URL=https://hwqdspmngjcnqdqijpio.supabase.co
+VITE_SUPABASE_ANON_KEY=your-beta-anon-key-here
+DEBUG=false
+```
+
+### 4. FastMCP Configuration
+Created `fastmcp.json` to avoid deprecated warnings:
+```json
+{
+  "entrypoint": "prep_chef_mcp_server.py",
+  "environment": {
+    "dependencies": ["supabase>=2.18.0", "python-dotenv>=1.1.0"]
+  }
+}
+```
+
+### 5. Created Comprehensive MCP Server
+Built `prep_chef_mcp_server.py` with the following features:
+
+#### Tools Available:
+- **Prep List Management**: `list_prep_lists`, `get_prep_list`, `create_prep_list`, `add_prep_item`, `update_prep_list_status`
+- **Recipe Management**: `list_recipes`, `get_recipe`, `create_recipe`
+- **Inventory Tracking**: `check_inventory`, `update_inventory_item`
+- **Staff Management**: `list_staff`, `assign_staff_to_prep_list`
+- **Analytics**: `get_prep_stats`
+- **Database Utilities**: `test_database_connection`, `get_database_schema`
+- **Batch Operations**: `batch_create_prep_items` (with progress reporting)
+
+#### Resources Available:
+- `prep://company/{company_id}/lists` - Get company prep lists
+- `prep://recipe/{recipe_id}` - Get specific recipe
+- `prep://inventory` - Get current inventory
+
+### 6. Testing the Server
+
+#### Local Testing:
+```bash
+# Test server loads correctly
+python prep_chef_mcp_server.py
+```
+
+#### Development Mode (MCP Inspector):
+```bash
+# Start development server with MCP Inspector
+fastmcp dev prep_chef_mcp_server.py
+
+# If port conflicts, specify UI port
+fastmcp dev prep_chef_mcp_server.py --ui-port 8080
+```
+
+**Result:** This opens the MCP Inspector in your browser where you can:
+- View all available tools and resources
+- Test tool functionality interactively
+- See real-time logs and debug information
+- Monitor server status
+
+## What the MCP Inspector Shows
+
+When working correctly, you'll see:
+- ✅ "Connected" status indicator
+- 📋 Resources tab showing your resource endpoints
+- 🔧 Tools tab with all your MCP tools
+- 📊 Real-time server logs and notifications
+- 🎯 Interactive testing interface
+
+## Key Files Created/Modified
+
+1. **`prep_chef_mcp_server.py`** - Main MCP server with all tools and resources
+2. **`fastmcp.json`** - Configuration file (removes deprecation warnings)
+3. **`requirements.txt`** - Python dependencies
+4. **`.env`** - Environment variables (clean version needed)
+5. **`test_prep_chef_mcp.py`** - Test script for local validation
+
+## Common Issues & Solutions
+
+### Environment File Problems
+**Issue:** `python-dotenv could not parse statement` errors
+**Solution:** The original "my env.txt" has mixed configurations. Create a clean `.env` with only beta database credentials.
+
+### Port Conflicts
+**Issue:** `Proxy Server PORT IS IN USE at port 6277`
+**Solution:** Use `--ui-port` flag to specify different port or kill existing FastMCP processes.
+
+### Deprecation Warnings
+**Issue:** `'dependencies' parameter is deprecated`
+**Solution:** Use `fastmcp.json` configuration file instead of passing dependencies in code.
+
+## Integration with AI Clients
+
+### For Cursor (when ready):
+```bash
+fastmcp install cursor prep_chef_mcp_server.py --name "Prep Chef MCP Server" --env-file .env
+```
+
+### For Claude Desktop:
+```bash
+fastmcp install claude-desktop prep_chef_mcp_server.py --name "Prep Chef MCP Server" --env-file .env
+```
+
+## Project Structure Integration
+
+The MCP server integrates with your existing modular structure:
+- Uses Supabase client similar to `packages/core/src/supabase.ts`
+- Respects the same database schema as your React app
+- Provides tools that complement your existing packages:
+  - `@prep-chef/data` - Database operations
+  - `@prep-chef/auth` - Authentication
+  - `@prep-chef/features-prep-lists` - Prep list functionality
+
+## Next Steps
+
+1. **Test Tools**: Use MCP Inspector to test each tool with real data
+2. **Install for AI Client**: Use `fastmcp install cursor` when ready
+3. **Add Service Role Key**: For admin operations, add `SUPABASE_SERVICE_ROLE_KEY` to env
+4. **Extend Functionality**: Add more tools as needed for your workflow
+
+## Success Indicators
+
+✅ FastMCP version 2.12.2+ installed  
+✅ MCP Inspector loads and shows "Connected"  
+✅ Resources appear in Resources tab  
+✅ Tools appear in Tools tab  
+✅ Database connection successful  
+✅ No critical errors in server logs  
+
+## Quick Commands Reference
+
+```bash
+# Install FastMCP
+uv pip install fastmcp
+
+# Start development server
+fastmcp dev prep_chef_mcp_server.py
+
+# Test server locally
+python prep_chef_mcp_server.py
+
+# Install for Cursor
+fastmcp install cursor prep_chef_mcp_server.py --name "Prep Chef MCP Server"
+
+# Check FastMCP help
+fastmcp --help
+fastmcp dev --help
+fastmcp install --help
+```
+
+---
+
+**🎉 Congratulations!** You now have a fully functional FastMCP server that gives AI agents comprehensive access to your Prep Chef kitchen management system!

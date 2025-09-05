@@ -1,0 +1,8 @@
+# bearer
+
+# `fastmcp.server.auth.providers.bearer`
+
+Backwards compatibility shim for BearerAuthProvider.
+
+The BearerAuthProvider class has been moved to fastmcp.server.auth.providers.jwt.JWTVerifier
+for better organization. This module provides a backwards-compatible import.
